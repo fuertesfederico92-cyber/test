@@ -1,0 +1,675 @@
+import { useState, useEffect } from 'react';
+import { Navigation } from '@/components/navigation';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle
+} from '@/components/ui/alert-dialog';
+import { Input } from '@/components/ui/input';
+import { useToast } from '@/hooks/use-toast';
+import { Eye, Edit2, Power, AlertTriangle } from 'lucide-react';
+
+interface DashboardData {
+  cliente: string;
+  clienteNombre: string;
+  marca: string;
+  zona: string;
+  numeroCampana: string;
+  enviados: number;
+  entregadosPorDia: number;
+  pedidosPorDia: number;
+  pedidosTotal: number;
+  porcentajeDesvio: number;
+  porcentajeDatosEnviados: number;
+  faltantesAEnviar: number;
+  cpl: string;
+  ventaPorCampana: string;
+  inversionRealizada: number;
+  inversionPendiente: number;
+  fechaCampana: string;
+  fechaFinReal: string;
+  cantidadSolicitada: number;
+  diasProcesados: number;
+  estadoCampana: string;
+}
+
+
+// Función para extraer marca del nombre del cliente
+const extractMarca = (clienteNombre: string): string => {
+  const marcaMap: Record<string, string> = {
+    'PEUGEOT': 'Peugeot',
+    'TOYOTA': 'Toyota',
+    'VW': 'Volkswagen',
+    'FIAT': 'Fiat',
+    'FORD': 'Ford',
+    'JEEP': 'Jeep',
+    'CHEVROLET': 'Chevrolet',
+    'CITROEN': 'Citroën',
+    'RENAULT': 'Renault'
+  };
+  
+  // Buscar marcas conocidas en cualquier parte del nombre (case insensitive)
+  const nombreUpper = clienteNombre.toUpperCase();
+  for (const [key, value] of Object.entries(marcaMap)) {
+    if (nombreUpper.includes(key)) {
+      return value;
+    }
+  }
+  
+  // Si no encuentra marca conocida, usar la primera palabra
+  const match = clienteNombre.match(/^([A-Z]+)/);
+  const marcaKey = match ? match[1] : clienteNombre.split(' ')[0].toUpperCase();
+  return marcaMap[marcaKey] || marcaKey;
+};
+
+export default function DashboardSimple() {
+  const [data, setData] = useState<DashboardData[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [selectedCampaign, setSelectedCampaign] = useState<DashboardData | null>(null);
+  const [isDetailsDialogOpen, setIsDetailsDialogOpen] = useState(false);
+  const [closingCampaign, setClosingCampaign] = useState<string | null>(null);
+  const [editModalOpen, setEditModalOpen] = useState(false);
+  const [editingCampaign, setEditingCampaign] = useState<DashboardData | null>(null);
+  const [confirmCloseCampaign, setConfirmCloseCampaign] = useState<DashboardData | null>(null);
+  const { toast } = useToast();
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const response = await fetch('/api/dashboard/datos-diarios', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('Datos cargados:', result.length, 'registros');
+      setData(result);
+    } catch (err) {
+      console.error('Error cargando datos:', err);
+      setError(err instanceof Error ? err.message : 'Error desconocido');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const refreshData = async () => {
+    try {
+      setLoading(true);
+      
+      // Primero ejecutar refresh completo
+      const refreshResponse = await fetch('/api/dashboard/refresh-all-data', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (refreshResponse.ok) {
+        console.log('Refresh completado, recargando datos...');
+        await fetchData();
+      } else {
+        throw new Error('Error en refresh');
+      }
+    } catch (err) {
+      console.error('Error en refresh:', err);
+      setError('Error actualizando datos');
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6">
+        <Navigation />
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center py-12">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-lg text-gray-600">Cargando datos del dashboard...</p>
+            <p className="text-sm text-gray-500 mt-2">{data.length} registros cargados</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen bg-gray-50 p-6">
+        <Navigation />
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center py-12">
+            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+              <strong>Error:</strong> {error}
+            </div>
+            <button 
+              onClick={fetchData}
+              className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700"
+            >
+              Reintentar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Todas las campañas se consideran en proceso - sin finalización automática
+  const campanasEnProceso = data;
+  const campanasFinalizadas: any[] = [];
+
+  // Funciones para manejar las acciones
+  const handleCloseCampaign = async (campaign: DashboardData) => {
+    try {
+      setClosingCampaign(campaign.numeroCampana);
+      
+      // Buscar el cliente en el nombre de la campaña para hacer el cierre específico
+      const clienteName = campaign.clienteNombre.toUpperCase().replace(/\s+/g, '_');
+      const marca = extractMarca(campaign.cliente).toUpperCase();
+      
+      const response = await fetch('/api/campaign-closure/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clients: [clienteName],
+          brands: [marca],
+          dryRun: false
+        })
+      });
+
+      if (response.ok) {
+        toast({
+          title: "Campaña cerrada exitosamente",
+          description: `La campaña ${campaign.numeroCampana} ha sido cerrada correctamente.`
+        });
+        // Recargar datos después del cierre
+        await fetchData();
+      }
+    } catch (error) {
+      console.error('Error cerrando campaña:', error);
+      toast({
+        title: "Error al cerrar campaña",
+        description: "Hubo un problema al cerrar la campaña. Inténtalo de nuevo.",
+        variant: "destructive"
+      });
+    } finally {
+      setClosingCampaign(null);
+    }
+  };
+
+  // Nueva función simple para editar campaña
+  const handleEditClick = (campaign: DashboardData) => {
+    setEditingCampaign(campaign);
+    setEditModalOpen(true);
+  };
+
+  const handleViewDetails = (campaign: DashboardData) => {
+    setSelectedCampaign(campaign);
+    setIsDetailsDialogOpen(true);
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 p-6">
+      <Navigation />
+      <div className="max-w-7xl mx-auto space-y-6">
+        
+        {/* Header */}
+        <div className="flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Dashboard - Datos Diarios</h1>
+            <p className="text-gray-600 mt-2">
+              Sistema de gestión de campañas Meta Ads con datos reales de Google Sheets
+            </p>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={refreshData}
+              disabled={loading}
+              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 disabled:opacity-50"
+            >
+              {loading ? 'Actualizando...' : 'Actualizar Datos'}
+            </button>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-sm font-medium text-gray-500">Total Campañas</h3>
+            <p className="text-2xl font-bold text-gray-900">{data.length}</p>
+          </div>
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-sm font-medium text-gray-500">En Proceso</h3>
+            <p className="text-2xl font-bold text-orange-600">{campanasEnProceso.length}</p>
+          </div>
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-sm font-medium text-gray-500">Finalizadas</h3>
+            <p className="text-2xl font-bold text-green-600">{campanasFinalizadas.length}</p>
+          </div>
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-sm font-medium text-gray-500">Total Enviados</h3>
+            <p className="text-2xl font-bold text-blue-600">
+              {data.reduce((sum, item) => sum + item.enviados, 0).toLocaleString()}
+            </p>
+          </div>
+        </div>
+
+        {/* Campañas en Proceso */}
+        {campanasEnProceso.length > 0 && (
+          <div className="bg-white rounded-lg shadow">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h2 className="text-xl font-semibold text-gray-900">
+                Campañas en Proceso ({campanasEnProceso.length})
+              </h2>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cliente</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Marca</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Zona</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Enviados</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">% Completado</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Faltantes</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">CPL</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Inversión</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {campanasEnProceso.map((item, index) => (
+                    <tr key={index} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div>
+                          <div className="font-medium text-gray-900">{item.clienteNombre}</div>
+                          <div className="text-sm text-gray-500">Campaña #{item.numeroCampana}</div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="bg-indigo-50 p-2 rounded text-center">
+                          <span className="font-semibold text-indigo-700">{extractMarca(item.cliente)}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.zona}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.enviados}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.pedidosTotal}</td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <div className="w-16 bg-gray-200 rounded-full h-2 mr-2">
+                            <div 
+                              className="bg-orange-500 h-2 rounded-full" 
+                              style={{width: `${Math.min(item.porcentajeDatosEnviados, 100)}%`}}
+                            ></div>
+                          </div>
+                          <span className="text-sm font-medium text-gray-900">
+                            {item.porcentajeDatosEnviados.toFixed(1)}%
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="px-2 py-1 text-xs font-medium bg-red-100 text-red-800 rounded-full">
+                          {item.faltantesAEnviar}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        ARS ${parseFloat(item.cpl).toLocaleString('es-AR')}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        ARS ${item.inversionRealizada.toLocaleString('es-AR')}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <div className="flex space-x-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setConfirmCloseCampaign(item)}
+                            disabled={closingCampaign === item.numeroCampana}
+                            className="h-8 px-3"
+                            data-testid={`button-close-campaign-${item.numeroCampana}`}
+                          >
+                            {closingCampaign === item.numeroCampana ? (
+                              <span className="text-xs">Cerrando...</span>
+                            ) : (
+                              <>
+                                <Power className="w-3 h-3 mr-1" />
+                                <span className="text-xs">Cerrar</span>
+                              </>
+                            )}
+                          </Button>
+                          <button
+                            onClick={() => handleEditClick(item)}
+                            className="h-8 px-3 bg-blue-50 text-blue-600 hover:bg-blue-100 border border-gray-300 rounded text-xs flex items-center"
+                            data-testid={`button-edit-campaign-${item.numeroCampana}`}
+                          >
+                            <Edit2 className="w-3 h-3 mr-1" />
+                            <span>Editar</span>
+                          </button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleViewDetails(item)}
+                            className="h-8 px-3"
+                            data-testid={`button-details-campaign-${item.numeroCampana}`}
+                          >
+                            <Eye className="w-3 h-3 mr-1" />
+                            <span className="text-xs">Ver detalles</span>
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Campañas Finalizadas */}
+        {campanasFinalizadas.length > 0 && (
+          <div className="bg-white rounded-lg shadow">
+            <div className="px-6 py-4 border-b border-gray-200">
+              <h2 className="text-xl font-semibold text-gray-900">
+                Campañas Finalizadas ({campanasFinalizadas.length})
+              </h2>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Cliente</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Marca</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Zona</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Enviados</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Estado</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">CPL</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Inversión</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {campanasFinalizadas.map((item, index) => (
+                    <tr key={index} className="hover:bg-gray-50">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div>
+                          <div className="font-medium text-gray-900">{item.clienteNombre}</div>
+                          <div className="text-sm text-gray-500">Campaña #{item.numeroCampana}</div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="bg-indigo-50 p-2 rounded text-center">
+                          <span className="font-semibold text-indigo-700">{extractMarca(item.cliente)}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.zona}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.enviados}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.pedidosTotal}</td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full">
+                          Completada
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        ARS ${parseFloat(item.cpl).toLocaleString('es-AR')}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        ARS ${item.inversionRealizada.toLocaleString('es-AR')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {data.length === 0 && !loading && (
+          <div className="text-center py-12">
+            <p className="text-gray-500">No hay datos disponibles</p>
+            <button 
+              onClick={fetchData}
+              className="mt-4 bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700"
+            >
+              Cargar datos
+            </button>
+          </div>
+        )}
+
+        {/* Dialog para Ver Detalles de Campaña */}
+        <Dialog open={isDetailsDialogOpen} onOpenChange={setIsDetailsDialogOpen}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Detalles de la Campaña</DialogTitle>
+            </DialogHeader>
+            {selectedCampaign && (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <h3 className="font-semibold text-gray-700">Cliente</h3>
+                    <p className="text-sm">{selectedCampaign.clienteNombre}</p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-700">Número de Campaña</h3>
+                    <p className="text-sm">#{selectedCampaign.numeroCampana}</p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-700">Marca</h3>
+                    <p className="text-sm">{extractMarca(selectedCampaign.cliente)}</p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-700">Zona</h3>
+                    <p className="text-sm">{selectedCampaign.zona}</p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-700">Fecha de Inicio</h3>
+                    <p className="text-sm">{selectedCampaign.fechaCampana || 'No especificada'}</p>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-700">Fecha de Fin</h3>
+                    <p className="text-sm">{selectedCampaign.fechaFinReal || 'En proceso'}</p>
+                  </div>
+                </div>
+                
+                <div className="border-t pt-4">
+                  <h3 className="font-semibold text-gray-700 mb-3">Estadísticas de la Campaña</h3>
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-blue-600">{selectedCampaign.enviados}</p>
+                      <p className="text-sm text-gray-500">Enviados</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-green-600">{selectedCampaign.pedidosTotal}</p>
+                      <p className="text-sm text-gray-500">Total Solicitado</p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-orange-600">{selectedCampaign.porcentajeDatosEnviados.toFixed(1)}%</p>
+                      <p className="text-sm text-gray-500">Completado</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t pt-4">
+                  <h3 className="font-semibold text-gray-700 mb-3">Información Financiera</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <h4 className="font-medium text-gray-600">CPL (Costo por Lead)</h4>
+                      <p className="text-lg font-semibold">ARS ${parseFloat(selectedCampaign.cpl).toLocaleString('es-AR')}</p>
+                    </div>
+                    <div>
+                      <h4 className="font-medium text-gray-600">Inversión Realizada</h4>
+                      <p className="text-lg font-semibold">ARS ${selectedCampaign.inversionRealizada.toLocaleString('es-AR')}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t pt-4">
+                  <h3 className="font-semibold text-gray-700 mb-3">Progreso</h3>
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span>Faltantes por enviar</span>
+                      <span className="font-medium">{selectedCampaign.faltantesAEnviar}</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-3">
+                      <div 
+                        className="bg-orange-500 h-3 rounded-full transition-all duration-300" 
+                        style={{width: `${Math.min(selectedCampaign.porcentajeDatosEnviados, 100)}%`}}
+                      ></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal simple para editar campaña */}
+        <Dialog open={editModalOpen} onOpenChange={setEditModalOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Editar Campaña</DialogTitle>
+            </DialogHeader>
+            {editingCampaign && (
+              <div className="space-y-4">
+                <div className="bg-blue-50 p-3 rounded">
+                  <p className="text-sm font-medium">{editingCampaign.clienteNombre}</p>
+                  <p className="text-xs text-gray-600">Campaña #{editingCampaign.numeroCampana}</p>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Cantidad Solicitada</label>
+                    <Input
+                      type="number"
+                      defaultValue={editingCampaign.cantidadSolicitada}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Zona</label>
+                    <Input
+                      defaultValue={editingCampaign.zona}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Pedidos por Día</label>
+                    <Input
+                      type="number"
+                      defaultValue={editingCampaign.pedidosPorDia}
+                      className="w-full"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex justify-end space-x-2 pt-4">
+                  <Button
+                    variant="outline"
+                    onClick={() => setEditModalOpen(false)}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    className="bg-blue-600 hover:bg-blue-700"
+                    onClick={() => {
+                      toast({
+                        title: "Campaña actualizada",
+                        description: "Los cambios se han guardado correctamente"
+                      });
+                      setEditModalOpen(false);
+                    }}
+                  >
+                    Guardar
+                  </Button>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* AlertDialog para confirmar cierre de campaña */}
+        <AlertDialog open={!!confirmCloseCampaign} onOpenChange={(open) => !open && setConfirmCloseCampaign(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-orange-500" />
+                Confirmar Cierre de Campaña
+              </AlertDialogTitle>
+              <AlertDialogDescription className="space-y-3">
+                {confirmCloseCampaign && (
+                  <>
+                    <p>
+                      ¿Estás seguro que deseas cerrar la campaña <strong>#{confirmCloseCampaign.numeroCampana}</strong> de{' '}
+                      <strong>{confirmCloseCampaign.clienteNombre}</strong>?
+                    </p>
+                    <div className="bg-gray-50 p-3 rounded space-y-1 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Enviados:</span>
+                        <span className="font-medium">{confirmCloseCampaign.enviados}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Total solicitado:</span>
+                        <span className="font-medium">{confirmCloseCampaign.pedidosTotal}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Progreso:</span>
+                        <span className="font-medium">{confirmCloseCampaign.porcentajeDatosEnviados.toFixed(1)}%</span>
+                      </div>
+                    </div>
+                    {confirmCloseCampaign.porcentajeDatosEnviados < 100 && (
+                      <div className="bg-yellow-50 border border-yellow-200 p-3 rounded">
+                        <p className="text-sm text-yellow-800">
+                          ⚠️ <strong>Nota:</strong> La campaña aún no ha alcanzado su meta. Faltan{' '}
+                          <strong>{confirmCloseCampaign.faltantesAEnviar}</strong> leads por enviar.
+                        </p>
+                      </div>
+                    )}
+                    <p className="text-sm text-gray-600">
+                      Esta acción cerrará la campaña y no podrá deshacerse.
+                    </p>
+                  </>
+                )}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (confirmCloseCampaign) {
+                    handleCloseCampaign(confirmCloseCampaign);
+                    setConfirmCloseCampaign(null);
+                  }
+                }}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                Cerrar Campaña
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+      </div>
+    </div>
+  );
+}
